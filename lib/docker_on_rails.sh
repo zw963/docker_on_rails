@@ -8,7 +8,7 @@ function say_hello () {
     # echo '###########'
 }
 
-say_hello
+say_hello()
 # say_hello1
 
 
