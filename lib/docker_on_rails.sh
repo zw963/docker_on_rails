@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 function __regexp_escape () {
     sed -e 's/[]\/$*.^|[]/\\&/g'
@@ -20,6 +20,46 @@ function __replace_config_file () {
     sed -i.bak -e "s/\($option[         =]*\).*/\1$value/" "$config_file"
 }
 
+function RUN () {
+    sleep 1
+    docker exec -i ${docker_user+-u} $docker_user $__CONTAINER "$@"
+}
+
+function PSQL () {
+    sleep 1
+    docker exec ${docker_user+-u} $docker_user $__CONTAINER psql -c "$@"
+}
+
+
+function TOUCH () {
+    # local dir=$(dirname $1)
+    # RUN mkdir -p $dir
+    docker exec -i $__CONTAINER truncate -s 1 $1
+    docker exec -i $__CONTAINER sed -i "s/.*/${2-\n}/" $1
+    docker exec -i $__CONTAINER chmod 0600 $1
+}
+function APPEND () {
+    local content=$1
+    local file=$2
+    docker exec ${docker_user+-u} $docker_user $__CONTAINER sed -i "$ a $content" $file
+}
+
+function RESTART () {
+    sleep 1.5
+    docker restart $__CONTAINER
+    docker logs $__CONTAINER
+}
+
+# 注意: 下面的模块, 必须放在 ENVS 的循环之前才有意义!
+function __BUILD_NEW_SECRET () {
+    local secret_file=/tmp/${__BASE_CONTAINER}/secret
+    if [ -s $secret_file -a "$RAILS_ENV" != production ]; then
+        export SECRET_KEY_BASE=$secrect_file
+    else
+        export SECRET_KEY_BASE=$(ruby -e "require 'securerandom'; puts SecureRandom.hex(64)")
+    fi
+}
+
 if [ "$dockerized_app_debug_mode" == "true" ]; then
     __replace_config_file 'config.consider_all_requests_local' 'true' ./config/environments/production.rb
 fi
@@ -30,19 +70,22 @@ set -e
 # ROOT=`dirname "$0"`
 # ROOT=`cd "$ROOT/.." && pwd`
 
-__ROOT=$(builtin cd "${0%/*}/.." &>/dev/null && pwd)
-__DOCKERFILE=$__ROOT/$dockerfile
-__BUILD_DOCKERFILE=$__ROOT/bin/build_dockerfile
+if [ -z "$RAILS_ENV" ]; then
+    echo 'Need specify $RAILS_ENV first.'
+    exit
+fi
 
+__ROOT=$(builtin cd "${0%/*}/../config/container" &>/dev/null && pwd)
+__DOCKERFILE=$__ROOT/$dockerfile
 __ARGS=''
 
 # 仅仅接受一个参数, 端口号/项目名称.
 if [ "$1" ]; then
+    # 如果参数指定的是端口.
     if [ "$1" -eq "$1" ] &>/dev/null; then
         __OUTER_EXPOSED_PORT=$1
     else
         __CONTAINER_NAME=$1
-        container_name=$1
     fi
 elif [ "$container_name" ]; then
     __CONTAINER_NAME=$container_name
@@ -56,7 +99,7 @@ if [ "$PROJECT_NAME" ]; then
     __NAME=$PROJECT_NAME
 else
     # 默认为项目名, 例如: ershou_web
-    __NAME=$(cd $__ROOT/.. &>/dev/null && basename `pwd`)
+    __NAME=$(cd $__ROOT/../.. &>/dev/null && basename `pwd`)
 fi
 
 __NEW_NAME=$(echo $__NAME |tr '_' '-')
@@ -70,33 +113,7 @@ __PACKAGE=${__NEW_NAME}/$(echo $dockerfile |cut -d'/' -f1)
 
 __IMAGE_DIR="$(dirname `mktemp`)/$__PACKAGE"
 
-function __BUILD () {
-    docker build -f $__DOCKERFILE -t $__PACKAGE . || exit
-    # 只有不是生产模式时, 才有可能跳过 build 几次直接 mount 当前目录.
-    if [ "$RAILS_ENV" != production ]; then
-        __MD5="$(md5sum $__DOCKERFILE |cut -d' ' -f1)$(md5sum $0 |cut -d' ' -f1)$(md5sum $__BUILD_DOCKERFILE |cut -d ' ' -f1)"
-        mkdir -p "$__IMAGE_DIR" && echo $__MD5 > "$__IMAGE_DIR"/md5
-    fi
-}
-
-# 根据 Dockerfile 的 md5 来确定是否需要再次 build.
-if [ -f "$__IMAGE_DIR"/md5 ]; then
-    __NEW_MD5="$(md5sum $__DOCKERFILE |cut -d' ' -f1)$(md5sum $0 |cut -d' ' -f1)$(md5sum $__BUILD_DOCKERFILE |cut -d ' ' -f1)"
-    __OLD_MD5=$(test -e "$__IMAGE_DIR"/md5 && cat "$__IMAGE_DIR"/md5)
-
-    # if [ "$__NEW_MD5" != "$__OLD_MD5" ]; then
-    #     __BUILD
-    # else
-    #     if [ "$mount_app_directory_when_development" == 'true' ] && [ "$RAILS_ENV" == "development" ]; then
-    #         __ARGS="$__ARGS -v $PWD:$INSTALL_PATH"
-    #     fi
-    # fi
-
-    # 貌似直接 mount, assets 不编译, 这里先取消, 稍后再研究.
-    __BUILD
-else
-    __BUILD
-fi
+docker build -f $__DOCKERFILE -t $__PACKAGE . || exit
 
 if ! __INNER_EXPOSED_PORTS=$(docker inspect --type image -f '{{.Config.ExposedPorts}}' $__PACKAGE |egrep -o '[0-9]+'); then
     echo "Does not export a port in your's Dockerfile ?"
@@ -110,17 +127,8 @@ __DEFAULT_PORT=$(echo "$__INNER_EXPOSED_PORTS" |sort -n |head -n1)
 
 __DOCKERFILE_ENVS=($(docker inspect -f '{{.Config.Env}}' $__PACKAGE|cut -d'[' -f2 |cut -d']' -f1))
 
-# 注意: 下面的模块, 必须放在 ENVS 的循环之前才有意义!
-function __BUILD_SECRET () {
-    local secret_file=/tmp/${__BASE_CONTAINER}/secret
-    if [ -s $secret_file -a "$RAILS_ENV" != production ]; then
-        export SECRET_KEY_BASE=$secrect_file
-    else
-        export SECRET_KEY_BASE=$(ruby -e "require 'securerandom'; puts SecureRandom.hex(64)")
-    fi
-}
-if [ "$dockerized_app_build_secret" == true ]; then
-    __BUILD_SECRET
+if [ "$dockerized_app_build_new_secret" == true ]; then
+    __BUILD_NEW_SECRET
 fi
 
 # 注意: 这里仅仅接受通过 export 声明的变量.
@@ -172,25 +180,49 @@ esac
 # 这个变量通常在部署时单独指定.
 # 首先尝试建立 network, 例如:: ershou-web.my-app.network
 
-# 自动创建 network 名称, 即: 总是创建并加入一个和 container name 相同的 network
-set +e
-docker network create ${__NEW_NAME}.network 2>/dev/null
-set -e
+# 如果是 app, 则尝试建立 network, 并将自己加入这个 network
 
-if [ $? == 0 -o $? == 1 ]; then
-    # 如果指定了 $container_name, 这通常是一个 public container,
-    if [ "$container_name" ]; then
+if [ "$depend_on_services" ]; then
+    # 如果声明了 depend_on_services, 表示这是一个 app.
+    # 此时需要执行以下两个步骤:
+    # 1. 创建一个 app 自己的 network
+    __NETWORK=${__NEW_NAME}.network
+
+    set +e
+    docker network create $__NETWORK 2>/dev/null
+    set -e
+
+    for service in $depend_on_services; do
+        status=$(docker inspect -f '{{.State.Status}}' $service)
+
+        if [ "$status" != running ]; then
+            echo "Depend service error: container $service not start"
+            exit
+        fi
+    done
+
+    # 如果服务都存在, 将所有这些服务加入当前 app 的网络.
+    for service in $depend_on_services; do
         set +e
-        # 此时建立一个这个 container 相关的 public network.
-        docker network create ${container_name}.network 2>/dev/null
+        docker network connect $__NETWORK $service
         set -e
-
-        # 并且, public container 加入这个 public network
-        __ARGS="$__ARGS --network=${container_name}.network"
-    else
-        __ARGS="$__ARGS --network=${__NEW_NAME}.network"
-    fi
+    done
 fi
+
+# if [ $? == 0 -o $? == 1 ]; then
+#     # 如果指定了 $container_name, 这通常是一个 public container,
+#     if [ "$container_name" ]; then
+#         set +e
+#         # 此时建立一个这个 container 相关的 public network.
+#         docker network create ${container_name}.network 2>/dev/null
+#         set -e
+
+#         # 并且, public container 加入这个 public network
+#         __ARGS="$__ARGS --network=${container_name}.network"
+#     else
+#         __ARGS="$__ARGS --network=${__NEW_NAME}.network"
+#     fi
+# fi
 
 # 设置 $container_run_as_daemon 为 false,  container 将不作为 daemon 启动.
 # 默认作为 daemon 启动.
@@ -203,22 +235,6 @@ if [ "$run_only_once" == true ]; then
     __ARGS="$__ARGS --rm"
 elif [ "$auto_restart" == true ]; then
     __ARGS="$__ARGS --restart=always"
-fi
-
-if [ "$depend_on_services" ]; then
-    __all_services=$(docker ps -a --format '{{.Names}}')
-    for service in $depend_on_services; do
-        if echo "$__all_services" |fgrep $service; then
-            docker start $service
-            if ! docker ps --format '{{.Names}}' |fgrep $service; then
-                echo "Service: $service could not start!"
-                exit
-            fi
-        else
-            echo "Service: $service not exist!"
-            exit
-        fi
-    done
 fi
 
 if [ "$container_name" ]; then
@@ -297,7 +313,7 @@ if [ "$shared_volumes" ]; then
     __SHARED_VOLUME=${__BASE_CONTAINER}.shared
     docker volume create --name $__SHARED_VOLUME
     for __volume in $shared_volumes; do
-        __ARGS="$__ARGS -v ${__SHARED_VOLUME}:$__volume"
+        __ARGS="$__ARGS -v ${__SHARED_VOLUME}:${INSTALL_PATH}/$__volume"
     done
 fi
 
@@ -343,11 +359,14 @@ if [ "$only_build_container" != true ]; then
     CONTAINER_LOCALNET_IP=$(docker exec $__CONTAINER ip route show |egrep -o 'src [0-9.]+' |egrep -o '[0-9.]+')
     docker ps -f "name=$__CONTAINER" --format 'table {{.ID}}:\t{{.Names}}\t{{.Command}}\t{{.Ports}}'
 
+    # $__NETWORK 存在, 表示创建了 app 网络, 然后加入之.
+    [ "$__NETWORK" ] && docker network connect $__NETWORK $__CONTAINER
+
     # 例如: pg-master 需要连接到 pgbouncer 的网络.
     # 这里的 connect_to_network 必须是已经存在的.
-    for i in ${connect_to_network[@]}; do
-        docker network connect $i $__CONTAINER
-    done
+    # for i in ${connect_to_network[@]}; do
+    #     docker network connect $i $__CONTAINER
+    # done
 
     # function __append_or_replace () {
     #     local content=$1
@@ -364,52 +383,22 @@ if [ "$only_build_container" != true ]; then
     # }
 
     # 先这样解决, 确保可以正确访问网址, 稍后更改.
-    if [ "$HTTP_HOST" ]; then
-        # __port=$(docker port $__CONTAINER |grep -o '0.0.0.0:[0-9]\{5\}' |cut -d':' -f2)
-        # 如果 hosts 文件中存在纪录, 执行替换.
-        if grep -qs -e "^[^#].*$HTTP_HOST" /etc/hosts; then
-            sudo sed -i "s#[0-9.]* *$HTTP_HOST#$CONTAINER_LOCALNET_IP $HTTP_HOST#" /etc/hosts
-            sudo sed -i "s#[0-9.]* *assets\.mymart\.com#$CONTAINER_LOCALNET_IP assets.mymart.com#" /etc/hosts
-            sudo sed -i "s#[0-9.]* *action-cable\.mymart\.com#$CONTAINER_LOCALNET_IP action-cable.mymart.com#" /etc/hosts
-        else
-            sudo sed -i "1i$CONTAINER_LOCALNET_IP ${HTTP_HOST}\n$CONTAINER_LOCALNET_IP assets.mymart.com\n$CONTAINER_LOCALNET_IP action-cable.mymart.com" /etc/hosts
-        fi
-    fi
+    # if [ "$HTTP_HOST" ]; then
+    #     # __port=$(docker port $__CONTAINER |grep -o '0.0.0.0:[0-9]\{5\}' |cut -d':' -f2)
+    #     # 如果 hosts 文件中存在纪录, 执行替换.
+    #     if grep -qs -e "^[^#].*$HTTP_HOST" /etc/hosts; then
+    #         sudo sed -i "s#[0-9.]* *$HTTP_HOST#$CONTAINER_LOCALNET_IP $HTTP_HOST#" /etc/hosts
+    #         sudo sed -i "s#[0-9.]* *assets\.mymart\.com#$CONTAINER_LOCALNET_IP assets.mymart.com#" /etc/hosts
+    #         sudo sed -i "s#[0-9.]* *action-cable\.mymart\.com#$CONTAINER_LOCALNET_IP action-cable.mymart.com#" /etc/hosts
+    #     else
+    #         sudo sed -i "1i$CONTAINER_LOCALNET_IP ${HTTP_HOST}\n$CONTAINER_LOCALNET_IP assets.mymart.com\n$CONTAINER_LOCALNET_IP action-cable.mymart.com" /etc/hosts
+    #     fi
+    # fi
 fi
 
 OUTER_EXPOSED_PORT=$__NEW_PORT
 CONTAINER_NAME=$__CONTAINER
 PROJECT_NAME=$__NAME
-
-function RUN () {
-    sleep 1
-    docker exec -i ${docker_user+-u} $docker_user $__CONTAINER "$@"
-}
-
-function PSQL () {
-    sleep 1
-    docker exec ${docker_user+-u} $docker_user $__CONTAINER psql -c "$@"
-}
-
-
-function TOUCH () {
-    # local dir=$(dirname $1)
-    # RUN mkdir -p $dir
-    docker exec -i $__CONTAINER truncate -s 1 $1
-    docker exec -i $__CONTAINER sed -i "s/.*/${2-\n}/" $1
-    docker exec -i $__CONTAINER chmod 0600 $1
-}
-function APPEND () {
-    local content=$1
-    local file=$2
-    docker exec ${docker_user+-u} $docker_user $__CONTAINER sed -i "$ a $content" $file
-}
-
-function RESTART () {
-    sleep 1.5
-    docker restart $__CONTAINER
-    docker logs $__CONTAINER
-}
 
 [ -f $__ENTRYPOINT ] && rm $__ENTRYPOINT || true
 
