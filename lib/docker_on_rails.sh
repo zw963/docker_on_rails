@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+function say_hello () {
+    echo 'hello!'
+}
+
+say_hello
+
 function __regexp_escape () {
     sed -e 's/[]\/$*.^|[]/\\&/g'
 }
