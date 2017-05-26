@@ -78,8 +78,8 @@ if [ -z "$RAILS_ENV" ]; then
 fi
 
 __PWD=$(pwd -P)
-echo "Current working directory $__PWD is as ROOT"
-__ROOT=$(builtin cd "$__PWD/config/container" &>/dev/null && pwd)
+echo "$__PWD is as current working directory"
+__ROOT=$(builtin cd "$__PWD/config/containers" &>/dev/null && pwd)
 echo "Container ROOT is: ${__ROOT}"
 __BUILD_SCRIPT_NAME=$(basename $1)
 echo "Build scripts name is: ${__BUILD_SCRIPT_NAME}"
