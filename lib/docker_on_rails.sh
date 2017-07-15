@@ -77,7 +77,7 @@ if [ -z "$RAILS_ENV" ]; then
     exit
 fi
 
-__PWD=$(pwd -P)
+__PWD=$(pwd)
 echo "$__PWD is as current working directory"
 __ROOT=$(builtin cd "$__PWD/config/containers" &>/dev/null && pwd)
 echo "Container ROOT is: ${__ROOT}"
