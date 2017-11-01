@@ -155,6 +155,14 @@ for i in ${__DOCKERFILE_ENVS[@]}; do
         continue
     fi
 
+    if [ "$__ENV_KEY" == 'RUBY_VERSION' ]; then
+        continue
+    fi
+
+    if [ "$__ENV_KEY" == 'GEM_HOME' ]; then
+        continue
+    fi
+
     __ENV_VALUE="$(eval "echo \$$__ENV_KEY")"
 
     # 表示覆盖了 Docker 中的变量, 而且覆盖后不为空.
@@ -165,7 +173,7 @@ done
 
 case "${__DEFAULT_PORT}" in
     5432)
-        __PING_COMMAND='pg_isready -q'
+        __PING_COMMAND='pg_isready -U postgres -q'
         # 如果打算在本地启动 app, 则复制一些 pg gem 所需的依赖到 /usr/local
         # TODO: 如果是 Mac, 这里的逻辑需要判断, 通过 brew 来安装 pg.
 
