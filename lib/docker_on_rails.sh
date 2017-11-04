@@ -202,32 +202,14 @@ esac
 
 # 如果是 app, 则尝试建立 network, 并将自己加入这个 network
 
-if [ "$depend_on_services" ]; then
-    # 如果声明了 depend_on_services, 表示这是一个 app.
-    # 此时需要执行以下两个步骤:
-    # 1. 创建一个 app 自己的 network
-    __NETWORK=${__NEW_NAME}.network
+for service in $depend_on_services; do
+    status=$(docker inspect -f '{{.State.Status}}' $service)
 
-    set +e
-    docker network create $__NETWORK 2>/dev/null
-    set -e
-
-    for service in $depend_on_services; do
-        status=$(docker inspect -f '{{.State.Status}}' $service)
-
-        if [ "$status" != running ]; then
-            echo "Depend service error: container $service not start"
-            exit
-        fi
-    done
-
-    # 如果服务都存在, 将所有这些服务加入当前 app 的网络.
-    for service in $depend_on_services; do
-        set +e
-        docker network connect $__NETWORK $service
-        set -e
-    done
-fi
+    if [ "$status" != running ]; then
+        echo "Depended service start error, container $service is not start."
+        exit
+    fi
+done
 
 # if [ $? == 0 -o $? == 1 ]; then
 #     # 如果指定了 $container_name, 这通常是一个 public container,
@@ -285,6 +267,7 @@ else
         __IPORT_COUNT=0
         for __IPORT in $(echo "$__INNER_EXPOSED_PORTS" |sort -n); do
             if [ $__IPORT_COUNT -gt 0 ]; then
+                # 找到了第一个可用的端口后, 如果内部还有其他端口, 再上一个端口之上加一.
                 __NEW_PORT=$(($__NEW_PORT+1))
                 __ARGS="$__ARGS -p 127.0.0.1:$__NEW_PORT:$__IPORT"
             else
@@ -386,8 +369,13 @@ if [ "$only_build_container" != true ]; then
     CONTAINER_LOCALNET_IP=$(docker exec $__CONTAINER ip route show |egrep -o 'src [0-9.]+' |egrep -o '[0-9.]+')
     docker ps -f "name=$__CONTAINER" --format 'table {{.ID}}:\t{{.Names}}\t{{.Command}}\t{{.Ports}}'
 
-    # $__NETWORK 存在, 表示创建了 app 网络, 然后加入之.
-    [ "$__NETWORK" ] && docker network connect $__NETWORK $__CONTAINER
+    __NETWORK=network.${__NEW_NAME}
+
+    # 尝试建立 network, 如果存在，将会创建失败, 此时也不退出。
+    set +e
+    docker network create $__NETWORK 2>/dev/null
+    set -e
+    docker network connect $__NETWORK $__CONTAINER
 
     # 例如: pg-master 需要连接到 pgbouncer 的网络.
     # 这里的 connect_to_network 必须是已经存在的.
