@@ -282,13 +282,20 @@ else
         __ARGS="$__ARGS -P"
     else
         # 自动查找下一个可用的端口.
-        for __IPORT in $(echo "$__INNER_EXPOSED_PORTS" |sort -n -r); do
-            __NEW_PORT=$__IPORT
-            while (6<>/dev/tcp/127.0.0.1/${__NEW_PORT}) &>/dev/null; do
+        __IPORT_COUNT=0
+        for __IPORT in $(echo "$__INNER_EXPOSED_PORTS" |sort -n); do
+            if [ $__IPORT_COUNT -gt 0 ]; then
                 __NEW_PORT=$(($__NEW_PORT+1))
-            done
-            __ARGS="$__ARGS -p 127.0.0.1:$__NEW_PORT:$__IPORT"
-            # sed "s#<%= ENV.fetch('DATABASE_HOSTNAME', '127.0.0.1') %>#127.0.0.1#g"
+                __ARGS="$__ARGS -p 127.0.0.1:$__NEW_PORT:$__IPORT"
+            else
+                __NEW_PORT=$__IPORT
+                while (6<>/dev/tcp/127.0.0.1/${__NEW_PORT}) &>/dev/null; do
+                    __NEW_PORT=$(($__NEW_PORT+1))
+                done
+                __ARGS="$__ARGS -p 127.0.0.1:$__NEW_PORT:$__IPORT"
+                __IPORT_COUNT=$(($__IPORT_COUNT+1))
+                # sed "s#<%= ENV.fetch('DATABASE_HOSTNAME', '127.0.0.1') %>#127.0.0.1#g"
+            fi
         done
     fi
 fi
@@ -296,12 +303,12 @@ fi
 __CONTAINER=${__BASE_CONTAINER}${__NEW_PORT+.}$__NEW_PORT
 
 if [ "$data_volume" ]; then
-    # 建立单独的数据卷或目录, 例如: ershou-web.pg.data
+    # 建立单独的数据卷或目录, 例如: data.ershou-web.pg
     __HOST_DATA_DIR=$(echo $data_volume |cut -d':' -f1)
 
     if [ "$__HOST_DATA_DIR" == "$data_volume" ]; then
         # 如果相等, 表示没有 :, 即: 应该使用 volume
-        __DATA_VOLUME=${__CONTAINER}.data
+        __DATA_VOLUME=data.${__CONTAINER}
         docker volume create --name $__DATA_VOLUME
         __ARGS="$__ARGS -v ${__DATA_VOLUME}:${data_volume}"
     else
@@ -316,7 +323,7 @@ fi
 
 if [ "$log_volume" ]; then
     # 建立单独的日志卷: 例如: ershou-web.app.log
-    __LOG_VOLUME=${__CONTAINER}.log
+    __LOG_VOLUME=log.${__CONTAINER}
     docker volume create --name $__LOG_VOLUME
     __ARGS="$__ARGS -v ${__LOG_VOLUME}:${log_volume}"
 fi
@@ -330,7 +337,7 @@ fi
 
 if [ "$shared_volumes" ]; then
     # app 共享的文件所在的卷, 例如: public/assets, tmp/cache 等.
-    __SHARED_VOLUME=${__BASE_CONTAINER}.shared
+    __SHARED_VOLUME=shared.${__BASE_CONTAINER}
     docker volume create --name $__SHARED_VOLUME
     for __volume in $shared_volumes; do
         __ARGS="$__ARGS -v ${__SHARED_VOLUME}:${INSTALL_PATH}/$__volume"
@@ -420,6 +427,10 @@ OUTER_EXPOSED_PORT=$__NEW_PORT
 CONTAINER_NAME=$__CONTAINER
 PROJECT_NAME=$__NAME
 
-[ -f $__ENTRYPOINT ] && rm $__ENTRYPOINT || true
+if [ -f $__ENTRYPOINT ]; then
+    rm $__ENTRYPOINT
+else
+    true
+fi
 
 set +x
