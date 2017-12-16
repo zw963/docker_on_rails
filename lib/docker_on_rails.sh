@@ -291,7 +291,7 @@ if [ "$data_volume" ]; then
 
     if [ "$__HOST_DATA_DIR" == "$data_volume" ]; then
         # 如果相等, 表示没有 :, 即: 应该使用 volume
-        __DATA_VOLUME=data.${__BASE_CONTAINER}
+        __DATA_VOLUME=data.${__CONTAINER}
         docker volume create --name $__DATA_VOLUME
         __ARGS="$__ARGS -v ${__DATA_VOLUME}:${data_volume}"
     else
