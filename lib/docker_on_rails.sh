@@ -87,27 +87,29 @@ echo "Build scripts name is: ${__BUILD_SCRIPT_NAME}"
 __DOCKERFILE=$__ROOT/$dockerfile
 __ARGS=''
 
-# 仅仅接受一个参数, 端口号/项目名称. (这里的 $2 是 build_?? 脚本的唯一参数.)
-if [ "$2" ]; then
-    # 如果参数指定的是端口.
-    if [ "$2" -eq "$2" ] &>/dev/null; then
-        __OUTER_EXPOSED_PORT=$1
-    else
-        __CONTAINER_NAME=$2
-    fi
-elif [ "$container_name" ]; then
+if [ "$container_name" ]; then
     __CONTAINER_NAME=$container_name
 else
     # 默认从脚本名中获取, 例如: build_pg_master, __CONTAINER_NAME 就是 pg_master
     __CONTAINER_NAME=$(basename $__BUILD_SCRIPT_NAME |cut -d'_' -f2-)
 fi
 
-if [ "$PROJECT_NAME" ]; then
-    # 如果环境变量中有指定, 无论目录名是啥, 都使用该环境变量
-    __NAME=$PROJECT_NAME
+# 仅仅接受一个参数, 端口号/项目名称. (这里的 $2 是 build_?? 脚本的唯一参数.)
+if [ "$2" ]; then
+    # 如果参数指定的是端口.
+    if [ "$2" -eq "$2" ] &>/dev/null; then
+        __OUTER_EXPOSED_PORT=$1
+    else
+        __NAME=$2
+    fi
 else
-    # 默认为项目名, 例如: ershou_web
-    __NAME=$(basename $__PWD)
+    if [ "$PROJECT_NAME" ]; then
+        # 如果环境变量中有指定, 无论目录名是啥, 都使用该环境变量
+        __NAME=$PROJECT_NAME
+    else
+        # 默认为项目名, 例如: ershou_web
+        __NAME=$(basename $__PWD)
+    fi
 fi
 
 __NEW_NAME=$(echo $__NAME |tr '_' '-')
